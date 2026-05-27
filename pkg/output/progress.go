@@ -86,3 +86,14 @@ func (p *ProgressReporter) DiscoveredCount(count int) {
 func (p *ProgressReporter) Discovered(count int) {
 	p.DiscoveredCount(count)
 }
+
+// Writing reports that a resource is being written to disk (export mode).
+func (p *ProgressReporter) Writing(path string) {
+	p.write(fmt.Sprintf("Writing %s...", path))
+}
+
+// Wrote clears the progress line after a successful write.
+// The per-file confirmation line is rendered by the caller instead.
+func (p *ProgressReporter) Wrote(_ string) {
+	p.Clear()
+}

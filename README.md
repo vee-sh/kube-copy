@@ -41,6 +41,8 @@ kubectl copy <resource>/<name> [flags]
 | `--to-name` | | New resource name (required for same-namespace copy) |
 | `--to-context` | | Target kubeconfig context (for cross-cluster copy) |
 | `--to-kubeconfig` | | Target kubeconfig file (for cross-cluster copy) |
+| `--to-dir` | | Export resources to YAML files in this directory (one file per resource) |
+| `--to-file` | | Export all resources as a single multi-doc YAML file |
 | `--recursive` | `-r` | Copy the full dependency graph |
 | `--dry-run` | | Preview what would be copied without making changes |
 | `--on-conflict` | | Conflict strategy: `skip` (default), `warn`, `overwrite` |
@@ -91,6 +93,53 @@ Overwrite existing resources in the target:
 
 ```bash
 kubectl copy deployment/myapp --to-namespace staging --on-conflict overwrite
+```
+
+Export a resource and its dependencies to YAML files on disk:
+
+```bash
+kubectl copy deployment/myapp -r --to-dir ./manifests
+```
+
+Export everything as a single multi-doc YAML (handy for `kubectl apply -f`):
+
+```bash
+kubectl copy deployment/myapp -r --to-file ./bundle.yaml
+```
+
+## Export to Filesystem
+
+Instead of writing to a live cluster, you can dump the (sanitized) resource and
+its full dependency graph to disk. This is useful for GitOps workflows, backups,
+and reviewing or templating manifests before applying them elsewhere.
+
+Two destinations are supported:
+
+- `--to-dir <path>`: one file per resource, named `<kind>-<name>.yaml`, placed
+  in the given directory (created if missing).
+- `--to-file <path>`: a single multi-document YAML file with `---` separators
+  between resources.
+
+Behavior in export mode:
+
+- Sanitization still runs, so server-set metadata, status, and conflict-prone
+  fields (ClusterIPs, NodePorts, PV bindings, etc.) are stripped just like in a
+  live copy.
+- `--to-namespace` and `--to-name` still apply -- they rewrite the metadata in
+  the dumped files so you can target a different namespace at apply time.
+- `--recursive` works as usual and includes the discovered dependency graph.
+- No target cluster is contacted, so target-side conflict checks are skipped.
+- `--to-dir`/`--to-file` cannot be combined with `--to-context`,
+  `--to-kubeconfig`, or `--dry-run`.
+
+Example output layout with `--to-dir`:
+
+```
+manifests/
+  deployment-myapp.yaml
+  configmap-myapp-config.yaml
+  secret-myapp-creds.yaml
+  service-myapp.yaml
 ```
 
 ## What Gets Sanitized

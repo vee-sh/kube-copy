@@ -112,20 +112,24 @@ func (c *Copier) Plan(ctx context.Context, ref ResourceRef, targetNS, targetName
 	result.Warnings = warnings
 	result.Sanitized = copied
 
-	// 3. Conflict detection
-	p.Checking(ref.DisplayName())
-	conflicts := conflict.Detect(ctx, c.TargetClient, ref.GVR, copied, targetNS)
-	result.Conflicts = conflicts
+	// 3. Conflict detection (skipped when there is no live target, e.g. export to disk).
+	if c.TargetClient != nil {
+		p.Checking(ref.DisplayName())
+		conflicts := conflict.Detect(ctx, c.TargetClient, ref.GVR, copied, targetNS)
+		result.Conflicts = conflicts
 
-	// Determine planned action
-	if conflictHasType(conflicts, conflict.TypeExistence) {
-		switch c.OnConflict {
-		case "skip":
-			result.Action = "skip"
-		case "warn", "overwrite":
-			result.Action = "overwrite"
+		if conflictHasType(conflicts, conflict.TypeExistence) {
+			switch c.OnConflict {
+			case "skip":
+				result.Action = "skip"
+			case "warn", "overwrite":
+				result.Action = "overwrite"
+			}
+		} else {
+			result.Action = "create"
 		}
 	} else {
+		// Export mode: no target cluster, so just mark as "create".
 		result.Action = "create"
 	}
 

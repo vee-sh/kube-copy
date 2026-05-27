@@ -13,6 +13,7 @@ import (
 	"github.com/a13x22/kube-copy/pkg/client"
 	"github.com/a13x22/kube-copy/pkg/copier"
 	"github.com/a13x22/kube-copy/pkg/discovery"
+	"github.com/a13x22/kube-copy/pkg/exporter"
 	"github.com/a13x22/kube-copy/pkg/output"
 )
 
@@ -34,6 +35,10 @@ type Options struct {
 	ToContext    string
 	ToKubeconfig string
 
+	// Filesystem export target (mutually exclusive with cluster targets).
+	ToDir  string // write one YAML file per resource into this directory
+	ToFile string // write all resources as a single multi-doc YAML file
+
 	// Behavior flags
 	Recursive  bool
 	DryRun     bool
@@ -41,6 +46,12 @@ type Options struct {
 	Quiet      bool   // suppress progress output
 	OnConflict string // "skip", "warn", "overwrite"
 	Output     string // "table", "yaml", "json"
+}
+
+// isExport reports whether this invocation targets the local filesystem
+// instead of a live Kubernetes cluster.
+func (o *Options) isExport() bool {
+	return o.ToDir != "" || o.ToFile != ""
 }
 
 // NewCopyCommand creates the root cobra command for kubectl-copy.
@@ -77,6 +88,12 @@ Resource can be specified as:
   # Dry-run to preview what would happen
   kubectl copy deployment/myapp --to-namespace staging -r --dry-run
 
+  # Export the resource and its dependencies to YAML files on disk
+  kubectl copy deployment/myapp -r --to-dir ./manifests
+
+  # Export everything to a single multi-doc YAML file
+  kubectl copy deployment/myapp -r --to-file ./bundle.yaml
+
   # Skip confirmation prompt
   kubectl copy deployment/myapp --to-namespace staging -y`,
 		SilenceUsage:  true,
@@ -101,6 +118,8 @@ Resource can be specified as:
 	cmd.Flags().StringVar(&o.ToName, "to-name", "", "new resource name (required for same-namespace copy)")
 	cmd.Flags().StringVar(&o.ToContext, "to-context", "", "target kubeconfig context (for cross-cluster copy)")
 	cmd.Flags().StringVar(&o.ToKubeconfig, "to-kubeconfig", "", "target kubeconfig file (for cross-cluster copy)")
+	cmd.Flags().StringVar(&o.ToDir, "to-dir", "", "export resources to YAML files in this directory (one file per resource)")
+	cmd.Flags().StringVar(&o.ToFile, "to-file", "", "export all resources as a single multi-doc YAML file")
 
 	// Behavior flags
 	cmd.Flags().BoolVarP(&o.Recursive, "recursive", "r", false, "copy the full dependency graph")
@@ -144,8 +163,21 @@ func (o *Options) Complete(cmd *cobra.Command, args []string) error {
 		o.ToNamespace = o.SourceNamespace
 	}
 
-	// Validate: same namespace + no rename = conflict (for namespaced resources)
-	if o.ToNamespace == o.SourceNamespace && o.ToName == "" && o.ToContext == "" && o.ToKubeconfig == "" {
+	// Validate export-target mutual exclusion.
+	if o.ToDir != "" && o.ToFile != "" {
+		return fmt.Errorf("--to-dir and --to-file are mutually exclusive")
+	}
+	if o.isExport() && (o.ToContext != "" || o.ToKubeconfig != "") {
+		return fmt.Errorf("--to-dir/--to-file cannot be combined with --to-context or --to-kubeconfig")
+	}
+	if o.isExport() && o.DryRun {
+		return fmt.Errorf("--dry-run has no effect with --to-dir/--to-file; the export itself is the output")
+	}
+
+	// Validate: same namespace + no rename = conflict (for namespaced resources).
+	// Skip this check when exporting to disk -- the files are independent of any
+	// live cluster, so a same-name same-namespace export is meaningful.
+	if !o.isExport() && o.ToNamespace == o.SourceNamespace && o.ToName == "" && o.ToContext == "" && o.ToKubeconfig == "" {
 		return fmt.Errorf("copying within the same namespace requires --to-name to avoid name collision")
 	}
 
@@ -208,8 +240,9 @@ func (o *Options) Run() error {
 		primaryRef.Namespace = ""
 	}
 
-	// Cluster-scoped in same cluster requires --to-name to avoid overwriting
-	if !primaryRef.Namespaced && o.ToName == "" && o.ToContext == "" && o.ToKubeconfig == "" {
+	// Cluster-scoped in same cluster requires --to-name to avoid overwriting.
+	// Skipped for export-to-disk -- no live target to collide with.
+	if !primaryRef.Namespaced && !o.isExport() && o.ToName == "" && o.ToContext == "" && o.ToKubeconfig == "" {
 		return fmt.Errorf("copying a cluster-scoped resource (e.g. StorageClass) in the same cluster requires --to-name")
 	}
 
@@ -227,23 +260,31 @@ func (o *Options) Run() error {
 		prog.DiscoveredCount(len(discovered))
 	}
 
-	// Create copier
+	// Create copier. In export mode we deliberately leave TargetClient nil so
+	// that Plan skips target-cluster conflict detection.
 	c := &copier.Copier{
 		SourceClient: clients.SourceDynamic,
-		TargetClient: clients.TargetDynamic,
 		OnConflict:   o.OnConflict,
 		Progress:     prog,
 	}
+	if !o.isExport() {
+		c.TargetClient = clients.TargetDynamic
+	}
 
-	// Target namespace is empty for cluster-scoped resources
+	// Target namespace is empty for cluster-scoped resources.
 	toNamespace := o.ToNamespace
 	if !primaryRef.Namespaced {
 		toNamespace = ""
 	}
 
-	// Phase 1: Plan (fetch, sanitize, detect conflicts)
+	// Phase 1: Plan (fetch, sanitize, and conflict-detect when not exporting).
 	planned := c.PlanAll(ctx, refs, toNamespace, o.ToName)
 	prog.Clear()
+
+	// Export mode short-circuits the apply/confirm flow.
+	if o.isExport() {
+		return runExport(planned, o, prog)
+	}
 
 	// Show the plan
 	if o.DryRun {
@@ -279,6 +320,47 @@ func (o *Options) Run() error {
 
 	// Show results
 	return output.PrintResults(planned, o.Output)
+}
+
+// runExport writes the planned resources to the local filesystem according
+// to the export flags. It prints a summary of what was written to stderr and
+// surfaces any per-resource errors via a non-zero exit.
+func runExport(planned []copier.CopyResult, o *Options, prog *output.ProgressReporter) error {
+	results, err := exporter.Export(planned, exporter.Options{
+		Dir:  o.ToDir,
+		File: o.ToFile,
+	}, prog)
+	if err != nil {
+		return err
+	}
+
+	var wrote, failed int
+	for _, r := range results {
+		if r.Error != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "  ERROR %s: %v\n", r.Source.DisplayName(), r.Error)
+			continue
+		}
+		wrote++
+		if o.ToDir != "" {
+			fmt.Fprintf(os.Stderr, "  + %s -> %s\n", r.Source.DisplayName(), r.Path)
+		}
+	}
+
+	target := o.ToDir
+	if target == "" {
+		target = o.ToFile
+	}
+	fmt.Fprintf(os.Stderr, "\n  Exported %d resource(s) to %s", wrote, target)
+	if failed > 0 {
+		fmt.Fprintf(os.Stderr, ", %d error(s)", failed)
+	}
+	fmt.Fprintln(os.Stderr)
+
+	if failed > 0 {
+		return fmt.Errorf("export completed with %d error(s)", failed)
+	}
+	return nil
 }
 
 // askConfirmation prompts the user for y/N confirmation on stderr.
