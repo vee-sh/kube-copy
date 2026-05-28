@@ -98,11 +98,17 @@ Resource can be specified as:
   kubectl copy deployment/myapp --to-namespace staging -y`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Args:          cobra.RangeArgs(1, 2),
-		PreRunE: func(cmd *cobra.Command, args []string) error {
-			return o.Complete(cmd, args)
-		},
+		Args:          cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// No resource argument -> print help instead of erroring.
+			// This mirrors how plain `kubectl` and `git` behave when invoked
+			// with no subcommand: be helpful, not noisy.
+			if len(args) == 0 {
+				return cmd.Help()
+			}
+			if err := o.Complete(cmd, args); err != nil {
+				return err
+			}
 			return o.Run()
 		},
 	}

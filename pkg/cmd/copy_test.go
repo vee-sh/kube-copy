@@ -1,9 +1,43 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
+
+func TestNoArgs_PrintsHelpInsteadOfError(t *testing.T) {
+	cmd := NewCopyCommand()
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(nil)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected no error for zero args, got: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"Usage:", "kubectl copy", "--to-dir"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("help output missing %q\n---\n%s", want, got)
+		}
+	}
+}
+
+func TestTooManyArgs_StillRejected(t *testing.T) {
+	cmd := NewCopyCommand()
+
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"deployment", "myapp", "extra"})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error when more than 2 args are passed")
+	}
+}
 
 // newTestOptions returns Options pre-populated with the same defaults cobra
 // would assign via flag registration. SourceNamespace is also pre-set so
