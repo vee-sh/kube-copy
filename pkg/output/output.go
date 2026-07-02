@@ -7,21 +7,34 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"golang.org/x/term"
 	"sigs.k8s.io/yaml"
 
 	"github.com/a13x22/kube-copy/pkg/copier"
 )
 
-// ANSI color codes
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorCyan   = "\033[36m"
-	colorGray   = "\033[90m"
-	colorBold   = "\033[1m"
+// ANSI color codes (empty when stderr is not a terminal).
+var (
+	colorReset  string
+	colorRed    string
+	colorGreen  string
+	colorYellow string
+	colorCyan   string
+	colorGray   string
+	colorBold   string
 )
+
+func init() {
+	if term.IsTerminal(int(os.Stderr.Fd())) && os.Getenv("NO_COLOR") == "" {
+		colorReset = "\033[0m"
+		colorRed = "\033[31m"
+		colorGreen = "\033[32m"
+		colorYellow = "\033[33m"
+		colorCyan = "\033[36m"
+		colorGray = "\033[90m"
+		colorBold = "\033[1m"
+	}
+}
 
 // PrintPlan shows the planned actions before execution (or for --dry-run).
 func PrintPlan(results []copier.CopyResult, format string) error {
@@ -286,7 +299,11 @@ func printJSON(results []copier.CopyResult, w io.Writer) error {
 func collectObjects(results []copier.CopyResult) []map[string]interface{} {
 	var objects []map[string]interface{}
 	for _, r := range results {
-		if r.Sanitized != nil {
+		if r.Error != nil || r.Sanitized == nil {
+			continue
+		}
+		switch r.Action {
+		case "create", "overwrite", "created", "overwritten":
 			objects = append(objects, r.Sanitized.Object)
 		}
 	}

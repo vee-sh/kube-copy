@@ -45,8 +45,10 @@ kubectl copy <resource>/<name> [flags]
 | `--to-file` | | Export all resources as a single multi-doc YAML file |
 | `--recursive` | `-r` | Copy the full dependency graph |
 | `--dry-run` | | Preview what would be copied without making changes |
+| `--yes` | `-y` | Skip confirmation prompt |
+| `--quiet` | `-q` | Suppress progress output |
 | `--on-conflict` | | Conflict strategy: `skip` (default), `warn`, `overwrite` |
-| `--output` | `-o` | Dry-run output format: `table` (default), `yaml`, `json` |
+| `--output` | `-o` | Output format for dry-run and post-apply summaries: `table` (default), `yaml`, `json` |
 | `--namespace` | `-n` | Source namespace |
 | `--context` | | Source kubeconfig context |
 | `--kubeconfig` | | Path to kubeconfig file |
@@ -128,7 +130,8 @@ Behavior in export mode:
 - `--to-namespace` and `--to-name` still apply -- they rewrite the metadata in
   the dumped files so you can target a different namespace at apply time.
 - `--recursive` works as usual and includes the discovered dependency graph.
-- No target cluster is contacted, so target-side conflict checks are skipped.
+- The source cluster is still contacted to fetch resources; only the target
+  cluster is skipped, so target-side conflict checks do not run.
 - `--to-dir`/`--to-file` cannot be combined with `--to-context`,
   `--to-kubeconfig`, or `--dry-run`.
 
@@ -169,7 +172,10 @@ which would cause conflicts or errors when creating a copy.
 
 Before creating each resource, the plugin checks for:
 
-- **Existence conflicts** -- resource already exists in target (behavior controlled by `--on-conflict`)
+- **Existence conflicts** -- resource already exists in target (behavior controlled by `--on-conflict`):
+  - `skip` (default): leave the existing resource untouched
+  - `warn`: print the conflict and still attempt create (no delete-first, unlike `overwrite`)
+  - `overwrite`: delete the existing resource, then create the copy
 - **Address conflicts** -- hardcoded ClusterIP, NodePort, or LoadBalancer IP
 - **Reference conflicts** -- referenced ConfigMap, Secret, PVC, or ServiceAccount does not exist in target (suggests using `--recursive`)
 

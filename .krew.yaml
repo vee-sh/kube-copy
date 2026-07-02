@@ -16,6 +16,7 @@ spec:
     - Smart sanitization (strips clusterIP, nodePort, PV bindings, etc.)
     - Conflict detection (existence, address, missing references)
     - Recursive mode to copy entire dependency graphs
+    - Export to disk with --to-dir (one file per resource) or --to-file (single multi-doc YAML)
     - Dry-run mode with table/yaml/json output
   caveats: |
     This plugin requires read access to the source namespace/cluster and

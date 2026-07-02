@@ -179,6 +179,9 @@ func (o *Options) Complete(cmd *cobra.Command, args []string) error {
 	if o.isExport() && o.DryRun {
 		return fmt.Errorf("--dry-run has no effect with --to-dir/--to-file; the export itself is the output")
 	}
+	if o.isExport() && (o.Output == "yaml" || o.Output == "json") {
+		return fmt.Errorf("--output %s cannot be combined with --to-dir/--to-file; export writes files directly", o.Output)
+	}
 
 	// Validate: same namespace + no rename = conflict (for namespaced resources).
 	// Skip this check when exporting to disk -- the files are independent of any
@@ -257,7 +260,7 @@ func (o *Options) Run() error {
 
 	if o.Recursive {
 		prog.Discovering()
-		discovered, err := discovery.Discover(ctx, clients.SourceDynamic, primaryRef.GVR, primaryRef.Name, primaryRef.Namespace)
+		discovered, err := discovery.Discover(ctx, clients.SourceDynamic, primaryRef)
 		if err != nil {
 			prog.Clear()
 			return fmt.Errorf("discovering dependencies: %w", err)
@@ -294,7 +297,10 @@ func (o *Options) Run() error {
 
 	// Show the plan
 	if o.DryRun {
-		return output.PrintPlan(planned, o.Output)
+		if err := output.PrintPlan(planned, o.Output); err != nil {
+			return err
+		}
+		return hasErrors(planned)
 	}
 
 	// Show plan table and ask for confirmation (unless --yes)
@@ -325,13 +331,35 @@ func (o *Options) Run() error {
 	c.ApplyAll(ctx, planned)
 
 	// Show results
-	return output.PrintResults(planned, o.Output)
+	if err := output.PrintResults(planned, o.Output); err != nil {
+		return err
+	}
+	return hasErrors(planned)
+}
+
+func hasErrors(results []copier.CopyResult) error {
+	failed := 0
+	for _, r := range results {
+		if r.Error != nil {
+			failed++
+		}
+	}
+	if failed == 0 {
+		return nil
+	}
+	return fmt.Errorf("copy completed with %d error(s)", failed)
 }
 
 // runExport writes the planned resources to the local filesystem according
 // to the export flags. It prints a summary of what was written to stderr and
 // surfaces any per-resource errors via a non-zero exit.
 func runExport(planned []copier.CopyResult, o *Options, prog *output.ProgressReporter) error {
+	for _, r := range planned {
+		for _, w := range r.Warnings {
+			fmt.Fprintf(os.Stderr, "  WARN  %s: %s\n", w.Resource, w.Message)
+		}
+	}
+
 	results, err := exporter.Export(planned, exporter.Options{
 		Dir:  o.ToDir,
 		File: o.ToFile,

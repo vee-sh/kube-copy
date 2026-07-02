@@ -12,6 +12,19 @@ import (
 func extractForwardRefs(obj *unstructured.Unstructured, namespace string) []copier.ResourceRef {
 	var refs []copier.ResourceRef
 
+	if obj.GetKind() == "PersistentVolumeClaim" {
+		if sc := extractStorageClassName(obj); sc != "" {
+			refs = append(refs, copier.ResourceRef{
+				GVR:        schema.GroupVersionResource{Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
+				Kind:       "StorageClass",
+				Name:       sc,
+				Namespace:  "",
+				Namespaced: false,
+			})
+		}
+		return refs
+	}
+
 	podSpec := extractPodSpec(obj)
 	if podSpec == nil {
 		return nil
@@ -58,6 +71,15 @@ func extractForwardRefs(obj *unstructured.Unstructured, namespace string) []copi
 	}
 
 	return refs
+}
+
+func extractStorageClassName(obj *unstructured.Unstructured) string {
+	spec, _ := obj.Object["spec"].(map[string]interface{})
+	if spec == nil {
+		return ""
+	}
+	name, _ := spec["storageClassName"].(string)
+	return name
 }
 
 // extractPodSpec navigates to the pod spec within various resource types.

@@ -28,7 +28,7 @@ type Options struct {
 	Dir string
 
 	// File, when set, writes a single multi-document YAML to this path.
-	// The parent directory must already exist (or be the current dir).
+	// The parent directory is created if missing.
 	File string
 }
 
@@ -107,6 +107,10 @@ func exportToDir(planned []copier.CopyResult, dir string, prog Progress) ([]Resu
 			continue
 		}
 
+		if _, err := os.Stat(path); err == nil {
+			fmt.Fprintf(os.Stderr, "  WARN  overwriting %s\n", path)
+		}
+
 		if err := os.WriteFile(path, data, 0o644); err != nil {
 			res.Error = fmt.Errorf("write %s: %w", path, err)
 			results = append(results, res)
@@ -133,14 +137,19 @@ func exportToFile(planned []copier.CopyResult, path string, prog Progress) ([]Re
 		prog.Writing(path)
 	}
 
-	f, err := os.Create(path)
-	if err != nil {
-		return nil, fmt.Errorf("create %q: %w", path, err)
+	if _, err := os.Stat(path); err == nil {
+		fmt.Fprintf(os.Stderr, "  WARN  overwriting %s\n", path)
 	}
-	defer f.Close()
+
+	tmpPath := path + ".tmp"
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return nil, fmt.Errorf("create %q: %w", tmpPath, err)
+	}
 
 	results := make([]Result, 0, len(planned))
 	wroteAny := false
+	writeFailed := false
 
 	for _, r := range planned {
 		res := Result{Source: r.Source, Path: path}
@@ -160,6 +169,7 @@ func exportToFile(planned []copier.CopyResult, path string, prog Progress) ([]Re
 			if _, err := io.WriteString(f, "---\n"); err != nil {
 				res.Error = fmt.Errorf("write separator: %w", err)
 				results = append(results, res)
+				writeFailed = true
 				continue
 			}
 		}
@@ -168,16 +178,36 @@ func exportToFile(planned []copier.CopyResult, path string, prog Progress) ([]Re
 		if err != nil {
 			res.Error = fmt.Errorf("marshal %s: %w", r.Source.DisplayName(), err)
 			results = append(results, res)
+			writeFailed = true
 			continue
 		}
 		if _, err := f.Write(data); err != nil {
 			res.Error = fmt.Errorf("write %s: %w", path, err)
 			results = append(results, res)
+			writeFailed = true
 			continue
 		}
 
 		wroteAny = true
 		results = append(results, res)
+	}
+
+	if closeErr := f.Close(); closeErr != nil && !writeFailed {
+		os.Remove(tmpPath)
+		return results, fmt.Errorf("close %q: %w", tmpPath, closeErr)
+	}
+
+	if writeFailed || !wroteAny {
+		os.Remove(tmpPath)
+		if prog != nil {
+			prog.Wrote(path)
+		}
+		return results, nil
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return results, fmt.Errorf("rename %q to %q: %w", tmpPath, path, err)
 	}
 
 	if prog != nil {

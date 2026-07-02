@@ -152,6 +152,23 @@ func TestComplete_RejectsExportWithToKubeconfig(t *testing.T) {
 	}
 }
 
+func TestComplete_RejectsExportWithYamlOrJsonOutput(t *testing.T) {
+	for _, format := range []string{"yaml", "json"} {
+		t.Run(format, func(t *testing.T) {
+			o := newTestOptions()
+			o.ToDir = "./out"
+			o.Output = format
+			err := o.Complete(nil, []string{"deployment/myapp"})
+			if err == nil {
+				t.Fatalf("expected error when --to-dir combined with --output=%s", format)
+			}
+			if !strings.Contains(err.Error(), "--to-dir") || !strings.Contains(err.Error(), format) {
+				t.Errorf("error should mention export and output format: %v", err)
+			}
+		})
+	}
+}
+
 func TestComplete_RejectsExportWithDryRun(t *testing.T) {
 	o := newTestOptions()
 	o.ToDir = "./out"

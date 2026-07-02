@@ -118,11 +118,16 @@ func (c *Copier) Plan(ctx context.Context, ref ResourceRef, targetNS, targetName
 		conflicts := conflict.Detect(ctx, c.TargetClient, ref.GVR, copied, targetNS)
 		result.Conflicts = conflicts
 
-		if conflictHasType(conflicts, conflict.TypeExistence) {
+		// Missing referenced resources in target would produce a broken copy.
+		if conflictHasType(conflicts, conflict.TypeReference) {
+			result.Action = "skip"
+		} else if conflictHasType(conflicts, conflict.TypeExistence) {
 			switch c.OnConflict {
 			case "skip":
 				result.Action = "skip"
-			case "warn", "overwrite":
+			case "warn":
+				result.Action = "create"
+			case "overwrite":
 				result.Action = "overwrite"
 			}
 		} else {
@@ -159,7 +164,11 @@ func (c *Copier) Apply(ctx context.Context, planned *CopyResult) {
 
 	var err error
 	if planned.Action == "overwrite" {
-		_ = c.TargetClient.Resource(ref.GVR).Namespace(targetNS).Delete(ctx, targetName, metav1.DeleteOptions{})
+		delErr := c.TargetClient.Resource(ref.GVR).Namespace(targetNS).Delete(ctx, targetName, metav1.DeleteOptions{})
+		if delErr != nil && !contains(delErr.Error(), "not found") {
+			planned.Error = fmt.Errorf("delete %s in %s: %w", ref.DisplayName(), targetNS, delErr)
+			return
+		}
 		_, err = c.TargetClient.Resource(ref.GVR).Namespace(targetNS).Create(ctx, copied, metav1.CreateOptions{})
 		planned.Action = "overwritten"
 	} else {

@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"os"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,18 +23,20 @@ type refKey struct {
 // Discover finds all related resources for the given primary resource.
 // Returns additional ResourceRefs that should be copied alongside the primary.
 // Uses BFS to traverse the dependency graph with cycle detection.
-func Discover(ctx context.Context, client dynamic.Interface, gvr schema.GroupVersionResource, name, namespace string) ([]copier.ResourceRef, error) {
+func Discover(ctx context.Context, client dynamic.Interface, primary copier.ResourceRef) ([]copier.ResourceRef, error) {
 	visited := map[refKey]bool{}
 	var result []copier.ResourceRef
 
+	namespace := primary.Namespace
+
 	// Mark the primary resource as visited
-	primaryKey := refKey{Resource: gvr.Resource, Name: name, Namespace: namespace}
+	primaryKey := refKey{Resource: primary.GVR.Resource, Name: primary.Name, Namespace: namespace}
 	visited[primaryKey] = true
 
 	// Fetch the primary object
-	primaryObj, err := client.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	primaryObj, err := getResource(ctx, client, primary)
 	if err != nil {
-		return nil, fmt.Errorf("fetching primary resource %s/%s: %w", gvr.Resource, name, err)
+		return nil, fmt.Errorf("fetching primary resource %s/%s: %w", primary.GVR.Resource, primary.Name, err)
 	}
 
 	// BFS queue
@@ -41,7 +44,7 @@ func Discover(ctx context.Context, client dynamic.Interface, gvr schema.GroupVer
 		obj *unstructured.Unstructured
 		ref copier.ResourceRef
 	}
-	queue := []queueItem{{obj: primaryObj, ref: copier.ResourceRef{GVR: gvr, Kind: gvrKind(gvr), Name: name, Namespace: namespace, Namespaced: true}}}
+	queue := []queueItem{{obj: primaryObj, ref: primary}}
 
 	for len(queue) > 0 {
 		current := queue[0]
@@ -57,9 +60,9 @@ func Discover(ctx context.Context, client dynamic.Interface, gvr schema.GroupVer
 			visited[key] = true
 
 			// Verify the resource exists before adding
-			obj, err := client.Resource(ref.GVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+			obj, err := getResource(ctx, client, ref)
 			if err != nil {
-				// Resource doesn't exist in source -- skip silently
+				fmt.Fprintf(os.Stderr, "  WARN  %s/%s not found in source, skipping\n", ref.Namespace, ref.Name)
 				continue
 			}
 
@@ -171,7 +174,7 @@ func findMatchingServices(ctx context.Context, client dynamic.Interface, namespa
 				Kind:       "Service",
 				Name:       svc.GetName(),
 				Namespace:  namespace,
-				Namespaced: true,
+				Namespaced: isNamespacedGVR(svcGVR),
 			})
 			objs = append(objs, svc)
 		}
@@ -199,7 +202,7 @@ func findIngressesForService(ctx context.Context, client dynamic.Interface, name
 				Kind:       "Ingress",
 				Name:       ing.GetName(),
 				Namespace:  namespace,
-				Namespaced: true,
+				Namespaced: isNamespacedGVR(ingGVR),
 			})
 			objs = append(objs, ing)
 		}
@@ -296,13 +299,34 @@ func findHPAsForResource(ctx context.Context, client dynamic.Interface, namespac
 				Kind:       "HorizontalPodAutoscaler",
 				Name:       hpa.GetName(),
 				Namespace:  namespace,
-				Namespaced: true,
+				Namespaced: isNamespacedGVR(hpaGVR),
 			})
 			objs = append(objs, hpa)
 		}
 	}
 
 	return refs, objs
+}
+
+func getResource(ctx context.Context, client dynamic.Interface, ref copier.ResourceRef) (*unstructured.Unstructured, error) {
+	if ref.Namespaced {
+		return client.Resource(ref.GVR).Namespace(ref.Namespace).Get(ctx, ref.Name, metav1.GetOptions{})
+	}
+	return client.Resource(ref.GVR).Get(ctx, ref.Name, metav1.GetOptions{})
+}
+
+// isNamespacedGVR returns false for known cluster-scoped API resources.
+func isNamespacedGVR(gvr schema.GroupVersionResource) bool {
+	switch gvr.Resource {
+	case "storageclasses", "persistentvolumes", "clusterroles", "clusterrolebindings",
+		"nodes", "namespaces", "priorityclasses", "ingressclasses", "runtimeclasses",
+		"csidrivers", "csinodes", "csistoragecapacities", "volumeattachments",
+		"mutatingwebhookconfigurations", "validatingwebhookconfigurations",
+		"customresourcedefinitions":
+		return false
+	default:
+		return true
+	}
 }
 
 // gvrKind maps a GVR resource name to a human-friendly Kind string.
@@ -323,6 +347,7 @@ func gvrKind(gvr schema.GroupVersionResource) string {
 		"cronjobs":                  "CronJob",
 		"horizontalpodautoscalers":  "HorizontalPodAutoscaler",
 		"networkpolicies":           "NetworkPolicy",
+		"storageclasses":            "StorageClass",
 	}
 	if k, ok := kinds[gvr.Resource]; ok {
 		return k
