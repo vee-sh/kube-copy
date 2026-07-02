@@ -67,6 +67,10 @@ detecting conflicts to avoid broken or duplicate resources.
 Supports copying single resources or entire dependency graphs with --recursive.
 Works across namespaces (same cluster) and across clusters (different context/kubeconfig).
 
+Destinations (pick one):
+  --to-namespace / --to-context     copy to another namespace or cluster
+  --to-dir / --to-file              export sanitized YAML to disk
+
 Resource can be specified as:
   deployment/myapp              slash-separated
   deployment myapp              space-separated
@@ -187,7 +191,7 @@ func (o *Options) Complete(cmd *cobra.Command, args []string) error {
 	// Skip this check when exporting to disk -- the files are independent of any
 	// live cluster, so a same-name same-namespace export is meaningful.
 	if !o.isExport() && o.ToNamespace == o.SourceNamespace && o.ToName == "" && o.ToContext == "" && o.ToKubeconfig == "" {
-		return fmt.Errorf("copying within the same namespace requires --to-name to avoid name collision")
+		return fmt.Errorf("copying within the same namespace requires --to-name to avoid name collision\n    Example: kubectl copy deployment/myapp --to-name myapp-copy")
 	}
 
 	// Validate on-conflict
@@ -252,7 +256,7 @@ func (o *Options) Run() error {
 	// Cluster-scoped in same cluster requires --to-name to avoid overwriting.
 	// Skipped for export-to-disk -- no live target to collide with.
 	if !primaryRef.Namespaced && !o.isExport() && o.ToName == "" && o.ToContext == "" && o.ToKubeconfig == "" {
-		return fmt.Errorf("copying a cluster-scoped resource (e.g. StorageClass) in the same cluster requires --to-name")
+		return fmt.Errorf("copying a cluster-scoped resource in the same cluster requires --to-name\n    Example: kubectl copy storageclass/fast --to-name fast-copy")
 	}
 
 	// Build list of resources to copy
@@ -290,8 +294,24 @@ func (o *Options) Run() error {
 	planned := c.PlanAll(ctx, refs, toNamespace, o.ToName)
 	prog.Clear()
 
+	op := output.Operation{
+		Kind:         resolved.Kind,
+		Name:         o.ResourceName,
+		SourceNS:     o.SourceNamespace,
+		TargetNS:     toNamespace,
+		TargetName:   o.TargetName(),
+		ToContext:    o.ToContext,
+		ToKubeconfig: o.ToKubeconfig,
+		ToDir:        o.ToDir,
+		ToFile:       o.ToFile,
+		Recursive:    o.Recursive,
+		Namespaced:   primaryRef.Namespaced,
+	}
+	output.PrintOperationBanner(os.Stderr, op)
+
 	// Export mode short-circuits the apply/confirm flow.
 	if o.isExport() {
+		output.PrintPlan(planned, "table")
 		return runExport(planned, o, prog)
 	}
 
@@ -316,18 +336,22 @@ func (o *Options) Run() error {
 			}
 		}
 		if !hasWork {
-			fmt.Fprintf(os.Stderr, "\n  Nothing to do.\n\n")
+			output.PrintNothingToDo(os.Stderr, planned)
 			return nil
 		}
 
-		if !askConfirmation() {
-			fmt.Fprintf(os.Stderr, "  Aborted.\n\n")
+		output.PrintConfirmationPrompt(os.Stderr, planned)
+		if !readConfirmation() {
+			fmt.Fprintf(os.Stderr, "\n  Aborted.\n\n")
 			return nil
 		}
+		fmt.Fprintln(os.Stderr)
 	}
 
 	// Phase 2: Apply
-	fmt.Fprintln(os.Stderr)
+	if !o.Quiet {
+		fmt.Fprintf(os.Stderr, "\n  Applying...\n\n")
+	}
 	c.ApplyAll(ctx, planned)
 
 	// Show results
@@ -354,12 +378,6 @@ func hasErrors(results []copier.CopyResult) error {
 // to the export flags. It prints a summary of what was written to stderr and
 // surfaces any per-resource errors via a non-zero exit.
 func runExport(planned []copier.CopyResult, o *Options, prog *output.ProgressReporter) error {
-	for _, r := range planned {
-		for _, w := range r.Warnings {
-			fmt.Fprintf(os.Stderr, "  WARN  %s: %s\n", w.Resource, w.Message)
-		}
-	}
-
 	results, err := exporter.Export(planned, exporter.Options{
 		Dir:  o.ToDir,
 		File: o.ToFile,
@@ -388,6 +406,8 @@ func runExport(planned []copier.CopyResult, o *Options, prog *output.ProgressRep
 	fmt.Fprintf(os.Stderr, "\n  Exported %d resource(s) to %s", wrote, target)
 	if failed > 0 {
 		fmt.Fprintf(os.Stderr, ", %d error(s)", failed)
+	} else if wrote > 0 {
+		fmt.Fprint(os.Stderr, " — done")
 	}
 	fmt.Fprintln(os.Stderr)
 
@@ -397,9 +417,8 @@ func runExport(planned []copier.CopyResult, o *Options, prog *output.ProgressRep
 	return nil
 }
 
-// askConfirmation prompts the user for y/N confirmation on stderr.
-func askConfirmation() bool {
-	fmt.Fprintf(os.Stderr, "  Proceed? [y/N]: ")
+// readConfirmation reads y/N from stdin after the prompt is printed.
+func readConfirmation() bool {
 	reader := bufio.NewReader(os.Stdin)
 	answer, err := reader.ReadString('\n')
 	if err != nil {

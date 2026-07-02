@@ -50,7 +50,11 @@ func (p *ProgressReporter) Connecting() {
 
 // Fetching reports that a resource is being fetched.
 func (p *ProgressReporter) Fetching(displayName, namespace string) {
-	p.write(fmt.Sprintf("Fetching %s from %s...", displayName, namespace))
+	loc := namespace
+	if namespace == "" {
+		loc = "cluster"
+	}
+	p.write(fmt.Sprintf("Fetching %s from %s...", displayName, loc))
 }
 
 // Sanitizing reports that a resource is being sanitized.
@@ -65,7 +69,11 @@ func (p *ProgressReporter) Checking(displayName string) {
 
 // Creating reports that a resource is being created.
 func (p *ProgressReporter) Creating(displayName, namespace string) {
-	p.write(fmt.Sprintf("Creating %s in %s...", displayName, namespace))
+	loc := namespace
+	if namespace == "" {
+		loc = "cluster"
+	}
+	p.write(fmt.Sprintf("Creating %s in %s...", displayName, loc))
 }
 
 // Discovering reports that dependency discovery is in progress.

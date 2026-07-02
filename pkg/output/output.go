@@ -67,22 +67,24 @@ func printPlanTable(results []copier.CopyResult, w io.Writer) error {
 	fmt.Fprintf(tw, "  %s------\t--------\t------\t------%s\n", colorGray, colorReset)
 
 	for _, r := range results {
+		src := FormatLocation(r.Source.Namespace, r.Source.Name, r.Source.Namespaced)
+		dst := FormatLocation(r.TargetNS, r.TargetName, r.Source.Namespaced)
 		if r.Error != nil {
-			fmt.Fprintf(tw, "  %serror\t%s\t%s/%s\t%s/%s%s\n",
+			fmt.Fprintf(tw, "  %serror\t%s\t%s\t%s%s\n",
 				colorRed,
 				r.Source.DisplayName(),
-				r.Source.Namespace, r.Source.Name,
-				r.TargetNS, r.TargetName,
+				src,
+				dst,
 				colorReset)
 			continue
 		}
 
 		color, symbol := actionStyle(r.Action)
-		fmt.Fprintf(tw, "  %s%s %s\t%s\t%s/%s\t%s/%s%s\n",
+		fmt.Fprintf(tw, "  %s%s %s\t%s\t%s\t%s%s\n",
 			color, symbol, r.Action,
 			r.Source.DisplayName(),
-			r.Source.Namespace, r.Source.Name,
-			r.TargetNS, r.TargetName,
+			src,
+			dst,
 			colorReset)
 	}
 	tw.Flush()
@@ -107,24 +109,27 @@ func printResultsTable(results []copier.CopyResult, w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 
 	for _, r := range results {
+		dst := FormatLocation(r.TargetNS, r.TargetName, r.Source.Namespaced)
 		if r.Error != nil {
-			fmt.Fprintf(tw, "  %sx  %s\t-> %s/%s\t%s%s\n",
+			fmt.Fprintf(tw, "  %sx  %s\t-> %s\t%s%s\n",
 				colorRed,
 				r.Source.DisplayName(),
-				r.TargetNS, r.TargetName,
+				dst,
 				"ERROR",
 				colorReset)
 			continue
 		}
 
 		color, symbol := doneStyle(r.Action)
-		fmt.Fprintf(tw, "  %s%s  %-12s\t%s -> %s/%s%s\n",
+		fmt.Fprintf(tw, "  %s%s  %-12s\t%s -> %s%s\n",
 			color, symbol, r.Action,
 			r.Source.DisplayName(),
-			r.TargetNS, r.TargetName,
+			dst,
 			colorReset)
 	}
 	tw.Flush()
+
+	printWarningsAndConflicts(results, w)
 
 	// Errors detail
 	for _, r := range results {
@@ -208,6 +213,11 @@ func printPlanSummary(results []copier.CopyResult, w io.Writer) {
 		fmt.Fprintf(w, ", %s%d error(s)%s", colorRed, errors, colorGray)
 	}
 	fmt.Fprintf(w, "%s\n", colorReset)
+
+	if creates > 0 {
+		fmt.Fprintf(w, "  %sTip:%s preview manifests with %s--dry-run -o yaml%s before applying.\n",
+			colorGray, colorReset, colorCyan, colorReset)
+	}
 }
 
 func printDoneSummary(results []copier.CopyResult, w io.Writer) {
@@ -257,6 +267,9 @@ func countErrors(results []copier.CopyResult) int {
 func printYAML(results []copier.CopyResult, w io.Writer) error {
 	objects := collectObjects(results)
 
+	if len(objects) == 0 {
+		return nil
+	}
 	if len(objects) == 1 {
 		data, err := yaml.Marshal(objects[0])
 		if err != nil {
@@ -266,12 +279,16 @@ func printYAML(results []copier.CopyResult, w io.Writer) error {
 		return nil
 	}
 
-	list := buildList(objects)
-	data, err := yaml.Marshal(list)
-	if err != nil {
-		return err
+	for i, obj := range objects {
+		if i > 0 {
+			fmt.Fprint(w, "---\n")
+		}
+		data, err := yaml.Marshal(obj)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(w, string(data))
 	}
-	fmt.Fprint(w, string(data))
 	return nil
 }
 
